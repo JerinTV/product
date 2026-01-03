@@ -99,7 +99,7 @@ npx hardhat node
 ## 🟢 TERMINAL 2 — Deploy Smart Contract
 
 ```bash
-npx hardhat run scripts/deploy.js --network localhost
+npx hardhat run scripts/deploy.cjs --network localhost
 ```
 
 You’ll see:
@@ -109,6 +109,8 @@ TrustChain deployed to: 0xABC123...
 ```
 
 📌 **Copy this contract address**
+
+CONTRACT_ADDRESS=0xABC123...   # paste deployed address in trustChain.js file
 
 ---
 
@@ -140,7 +142,7 @@ Backend running on http://localhost:5000
 ## 🟢 TERMINAL 4 — Start Frontend
 
 ```bash
-cd frontend
+
 npm run dev
 ```
 
