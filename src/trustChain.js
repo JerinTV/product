@@ -1,157 +1,117 @@
 import { ethers } from "ethers";
 import TrustChainAbi from "./TrustChainAbi.json";
-import CryptoJS from "crypto-js";
 
 /* ================= CONFIG ================= */
+const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS;
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 
-const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+if (!CONTRACT_ADDRESS) throw new Error("❌ VITE_CONTRACT_ADDRESS not set in .env");
+if (!BACKEND_URL) throw new Error("❌ VITE_BACKEND_URL not set in .env");
+
+/* ================= CACHE ================= */
+let provider = null;
+let signer = null;
+let contract = null;
 
 /* ================= PROVIDER ================= */
-
 const getProvider = () => {
   if (!window.ethereum) throw new Error("MetaMask not found");
-  return new ethers.BrowserProvider(window.ethereum);
+
+  if (!provider) provider = new ethers.BrowserProvider(window.ethereum);
+  return provider;
+};
+
+/* ================= SIGNER ================= */
+const getSigner = async () => {
+  if (!signer) signer = await getProvider().getSigner();
+  return signer;
 };
 
 /* ================= CONTRACT ================= */
-
 const getContract = async () => {
-  if (!window.ethereum) throw new Error("MetaMask not found");
-  await window.ethereum.request({ method: "eth_requestAccounts" });
-
-  const provider = getProvider();
-  const signer = await provider.getSigner();
-
-  return new ethers.Contract(CONTRACT_ADDRESS, TrustChainAbi, signer);
+  if (!contract) contract = new ethers.Contract(CONTRACT_ADDRESS, TrustChainAbi, await getSigner());
+  return contract;
 };
 
-/* ================= WALLET ================= */
-
+/* ================= WALLET CONNECT ================= */
 export const connectBlockchain = async () => {
   if (!window.ethereum) throw new Error("MetaMask not found");
-  await window.ethereum.request({ method: "eth_requestAccounts" });
-  console.log("✅ Wallet connected");
+  const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+  console.log("✅ Wallet connected:", accounts[0]);
+  return accounts[0];
 };
 
-/* ================= BACKEND SECRET STORAGE ================= */
-
-const storeSecretInBackend = async (productId, secret) => {
-  await fetch("http://localhost:5000/store-secret", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ productId, secret })
-  });
-};
-
-/* ================= SECRET HELPERS ================= */
-
-const generateBatchSecret = () => {
-  return CryptoJS.lib.WordArray.random(32).toString();
-};
-
-const deriveProductSecret = (batchSecret, productId) => {
-  return CryptoJS.SHA256(batchSecret + productId).toString();
-};
-
-/* ================= ⭐ BATCH REGISTER (PRODUCTION) ================= */
-
+/* ================= BATCH REGISTER ================= */
 export const registerBatch = async (batch) => {
   console.log("🏭 Registering batch:", batch.batchId);
 
-  const contract = await getContract();
+  // 1️⃣ Prepare batch via backend
+  const token = localStorage.getItem("token") || ""; // optional auth token
+  const res = await fetch(`${BACKEND_URL}/api/manufacturer/prepare-batch`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(batch)
+  });
 
-  // 1️⃣ Generate batch secret (OFF-CHAIN)
-  const batchSecret = generateBatchSecret();
-  console.log("🔐 Batch secret generated");
-
-  const startNum = parseInt(batch.startProductId.replace(/\D/g, ""), 10);
-
-  const items = [];
-
-  // 2️⃣ Prepare batch payload
-  for (let i = 0; i < batch.batchSize; i++) {
-    const productId = `P${startNum + i}`;
-    const serialNumber = `${batch.batchId}-SN-${i + 1}`;
-
-    const productSecret = deriveProductSecret(batchSecret, productId);
-
-    // store secret in backend DB (JSON)
-    await storeSecretInBackend(productId, productSecret);
-
-    items.push({
-      productId,
-      boxId: batch.boxId,
-      name: batch.name,
-      category: batch.category,
-      manufacturer: batch.manufacturer,
-      manufacturerDate: batch.manufacturerDate,
-      manufacturePlace: batch.manufacturePlace,
-      modelNumber: batch.modelNumber,
-      serialNumber,
-      warrantyPeriod: batch.warrantyPeriod,
-      batchNumber: batch.batchId,
-      color: batch.color,
-      specs: JSON.stringify({ batch: batch.batchId }),
-      price: BigInt(batch.price),
-      image: batch.image
-    });
-
-    console.log("🔐 NFC secret stored for:", productId);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error("Prepare batch failed: " + text);
   }
 
-  // 3️⃣ SINGLE blockchain transaction ✅
-  const tx = await contract.registerBatchProducts(
-    batch.batchId,
-    batch.boxId,
-    items
-  );
+  const { items } = await res.json();
 
+  // 2️⃣ Blockchain transaction
+  const c = await getContract();
+  const tx = await c.registerBatchProducts(batch.batchId, batch.boxId, items);
   await tx.wait();
 
-  console.log("✅ Batch registered on blockchain (ONE TX)");
+  console.log("✅ Batch registered on blockchain");
 };
 
-/* ================= SHIP ================= */
-
+/* ================= SHIP BOX ================= */
 export const shipBox = async (boxId) => {
-  const contract = await getContract();
-  const tx = await contract.shipBox(boxId);
+  const c = await getContract();
+  const tx = await c.shipBox(boxId);
   await tx.wait();
   console.log("📦 Box shipped:", boxId);
 };
 
-
-/* ================= BOX QUERY ================= */
-
+/* ================= GET PRODUCT IDS ================= */
 export const getProductIdsByBox = async (boxId) => {
-  const contract = await getContract();
-  const ids = await contract.getProductsByBox(boxId);
-  return ids.map(id => id.toString());
+  const c = await getContract();
+  const ids = await c.getProductsByBox(boxId);
+  return ids.map((id) => id.toString());
 };
 
-/* ================= RETAILER VERIFY ================= */
-
+/* ================= VERIFY & SALE ================= */
 export const verifyRetailer = async (productId) => {
-  const contract = await getContract();
-  const tx = await contract.verifyRetailer(productId);
+  const c = await getContract();
+  const tx = await c.verifyRetailer(productId);
   await tx.wait();
   console.log("✅ Retailer verified:", productId);
 };
 
-/* ================= SALE ================= */
+export const verifyBySystem = async (productId) => {
+  const c = await getContract();
+  const tx = await c.verifyBySystem(productId);
+  await tx.wait();
+  console.log("🛡️ System verified:", productId);
+};
 
 export const saleComplete = async (productId) => {
-  const contract = await getContract();
-  const tx = await contract.saleComplete(productId);
+  const c = await getContract();
+  const tx = await c.saleComplete(productId);
   await tx.wait();
   console.log("💰 Sold:", productId);
 };
 
-/* ================= FETCH PRODUCT ================= */
-
+/* ================= GET PRODUCT DETAILS ================= */
 export const getProduct = async (productId) => {
-  const contract = await getContract();
-  const p = await contract.getProduct(productId);
+  const c = await getContract();
+  const p = await c.getProduct(productId);
 
   return {
     productId: p.productId || "",
@@ -171,6 +131,7 @@ export const getProduct = async (productId) => {
     image: p.image || "",
     shipped: Boolean(p.shipped),
     verifiedByRetailer: Boolean(p.verifiedByRetailer),
+    verifiedBySystem: Boolean(p.verifiedBySystem),
     sold: Boolean(p.sold)
   };
 };

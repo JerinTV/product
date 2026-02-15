@@ -1,277 +1,297 @@
-// src/components/ManufacturerDashboard.jsx
+import { useEffect, useState } from "react";
+import "../../index3.css";
 
-import React, { useState } from "react";
+/* ===== BACKEND API ===== */
 import {
-  connectBlockchain,
-  registerBatch,
-  shipBox,
-  getProduct,
-  getProductIdsByBox
+  getStats,
+  getActivity,
+  getBatches,
+  registerBatch as registerBatchDB,
+  shipBatch
+} from "../../services/api";
+
+/* ===== BLOCKCHAIN ===== */
+import {
+  registerBatch as registerBatchChain
 } from "../../trustChain";
-import "../../index2.css";
 
-/* ================= DEFAULT BATCH TEMPLATE ================= */
+export default function Manufacturer() {
 
-const defaultBatch = {
-  batchId: "BATCH-567",
-  boxId: "BOX-001",
-  batchSize: 5,
-  startProductId: "P1001",
+  const [activeTab, setActiveTab] = useState("register");
+  const [stats, setStats] = useState({});
+  const [activity, setActivity] = useState([]);
+  const [batches, setBatches] = useState([]);
+  const [account, setAccount] = useState(null);
+  const [search, setSearch] = useState("");
 
-  // Product template
-  name: "Smartphone X",
-  category: "Smartphone",
-  manufacturer: "TechCorp Ltd.",
-  manufacturerDate: "2025-12-10",
-  manufacturePlace: "Bangalore, India",
-  modelNumber: "X1000",
-  warrantyPeriod: "24 months",
-  color: "Black",
-  price: 65000,
-  image: "/mob.jpg"
-};
+  /* ================= FORM DATA ================= */
 
-const ManufacturerDashboard = () => {
-  const [batch, setBatch] = useState(defaultBatch);
-  const [status, setStatus] = useState("");
-  const [walletConnected, setWalletConnected] = useState(false);
-  const [activeAction, setActiveAction] = useState("register");
-  const [batchCreated, setBatchCreated] = useState(false);
+  const [formData, setFormData] = useState({
+    batchId: "BATCH-001",
+    boxId: "BOX-001",
+    batchSize: 10,
+    startProductId: "P1000",
 
-  const [boxId, setBoxId] = useState("");
-  const [boxProducts, setBoxProducts] = useState([]);
+    name: "TrustChain Device",
+    category: "Electronics",
+    warrantyPeriod: "1 Year",
+    image: "product.png",
 
-  const [searchProductId, setSearchProductId] = useState("");
-  const [fetchedProduct, setFetchedProduct] = useState(null);
+    manufacturer: "TrustChain Pvt Ltd",
+    manufacturerDate: new Date().toISOString().split("T")[0],
+    manufacturePlace: "Bangalore",
+    modelNumber: "TC-2026-X",
+    serialPrefix: "SN",
+    color: "Black",
+    price: 4999
+  });
 
-  /* ================= CONNECT WALLET ================= */
+  /* ================= LOAD DASHBOARD ================= */
 
-  const handleConnect = async () => {
+  const loadDashboard = async () => {
     try {
-      await connectBlockchain();
-      setWalletConnected(true);
-      setStatus("✅ Wallet connected");
+      const s = await getStats();
+      const a = await getActivity();
+      const b = await getBatches();
+
+      setStats(s);
+      setActivity(a);
+      setBatches(b);
+    } catch (e) {
+      console.error("Dashboard load error:", e);
+    }
+  };
+
+  useEffect(() => {
+    loadDashboard();
+  }, []);
+
+  /* ================= METAMASK ================= */
+
+  const connectWallet = async () => {
+    if (!window.ethereum) return alert("Install MetaMask");
+
+    try {
+      const accounts = await window.ethereum.request({
+        method: "eth_requestAccounts"
+      });
+
+      setAccount(accounts[0]);
+    } catch (e) {
+      console.error("Wallet connect error:", e);
+    }
+  };
+
+  /* ================= FORM ================= */
+
+  const handleChange = (e) => {
+    setFormData({
+      ...formData,
+      [e.target.name]:
+        e.target.type === "number"
+          ? Number(e.target.value)
+          : e.target.value
+    });
+  };
+
+  /* ================= REGISTER ================= */
+
+  const handleRegister = async () => {
+    if (!account) return alert("Connect Wallet First");
+
+    try {
+      /* 1️⃣ BLOCKCHAIN (MetaMask TX) */
+      await registerBatchChain(formData);
+
+      /* 2️⃣ DATABASE (Prisma) */
+      await registerBatchDB(formData);
+
+      alert("Batch Registered Successfully");
+
+      loadDashboard();
+      setActiveTab("fetch");
+
     } catch (err) {
-      console.error(err);
-      setStatus("❌ Wallet connection failed");
+      console.error("REGISTER ERROR:", err);
+      alert("Registration Failed");
     }
   };
 
-  /* ================= CREATE & REGISTER BATCH ================= */
+  /* ================= SHIP ================= */
 
-  const handleCreateBatch = async () => {
+  const handleShip = async (batchId) => {
+    if (!account) return alert("Connect Wallet First");
+
     try {
-      setStatus("⏳ Registering batch on blockchain...");
-      await registerBatch(batch);
-      setBatchCreated(true);
-
-      const start = parseInt(batch.startProductId.replace(/\D/g, ""));
-      const end = start + batch.batchSize - 1;
-
-      setStatus(
-        `✅ Batch registered successfully.
-Products created: P${start} → P${end}`
-      );
+      await shipBatch({ batchId });
+      loadDashboard();
     } catch (err) {
-      console.error(err);
-      setStatus("❌ Batch registration failed");
+      console.error("SHIP ERROR:", err);
     }
   };
 
-  /* ================= FETCH BOX ================= */
-
-  const handleFetchBox = async () => {
-    try {
-      setStatus("⏳ Fetching box...");
-      const ids = await getProductIdsByBox(boxId);
-      const products = [];
-
-      for (let pid of ids) {
-        const p = await getProduct(pid);
-        products.push(p);
-      }
-
-      setBoxProducts(products);
-      setStatus(`📦 Box ${boxId} contains ${products.length} products`);
-    } catch {
-      setBoxProducts([]);
-      setStatus("❌ Box not found");
-    }
-  };
-
-  /* ================= SHIP BOX ================= */
-
-  const handleShipBox = async () => {
-  try {
-    setStatus("⏳ Shipping box...");
-    await shipBox(boxId); // ✅ ONE transaction
-    setStatus("✅ Box shipped successfully");
-    handleFetchBox();
-  } catch (err) {
-    console.error(err);
-    setStatus("❌ Shipping failed");
-  }
-};
-
-
-  /* ================= FETCH PRODUCT ================= */
-
-  const handleFetchProduct = async () => {
-    try {
-      const p = await getProduct(searchProductId);
-      setFetchedProduct(p);
-      setStatus("");
-    } catch {
-      setFetchedProduct(null);
-      setStatus("❌ Product not found");
-    }
-  };
-
-  /* ================= UI ================= */
+  const filteredBatches = batches.filter((b) =>
+    b.batchId.toLowerCase().includes(search.toLowerCase())
+  );
 
   return (
-    <div className="premium-dashboard" style={{ width: "100vw", padding: "20px" }}>
-      <h2>Manufacturer Dashboard</h2>
+    <div className="layout">
 
-      {/* WALLET */}
-      <div className="center" style={{ marginBottom: "20px" }}>
-        <button
-          className="btn-primary"
-          onClick={handleConnect}
-          style={{ backgroundColor: walletConnected ? "#28a745" : "#007bff" }}
-        >
-          {walletConnected ? "Connected" : "Connect Wallet"}
-        </button>
+      {/* SIDEBAR */}
+      <div className="sidebar">
+        <div className="logo-fixed">TRUSTCHAIN</div>
+
+        <div className={`menu ${activeTab==="register"?"active":""}`} onClick={()=>setActiveTab("register")}>REGISTER</div>
+        <div className={`menu ${activeTab==="fetch"?"active":""}`} onClick={()=>setActiveTab("fetch")}>FETCH</div>
+        <div className={`menu ${activeTab==="ship"?"active":""}`} onClick={()=>setActiveTab("ship")}>SHIP</div>
       </div>
 
-      {/* ACTION SWITCH */}
-      <div className="center" style={{ marginBottom: "20px" }}>
-        <button className="btn-outline" onClick={() => setActiveAction("register")}>
-          Register Batch
-        </button>
-        <button className="btn-outline" onClick={() => setActiveAction("ship")}>
-          Ship Box
-        </button>
-        <button className="btn-outline" onClick={() => setActiveAction("fetch")}>
-          Fetch Product
-        </button>
-      </div>
+      {/* MAIN */}
+      <div className="main">
 
-      {/* ================= REGISTER BATCH ================= */}
-
-      {activeAction === "register" && (
-        <div className="product-form">
-
-          <h3>Batch Details</h3>
-
-          <div className="form-row">
-            <input disabled={batchCreated} placeholder="Batch ID"
-              value={batch.batchId}
-              onChange={e => setBatch({ ...batch, batchId: e.target.value })} />
-
-            <input disabled={batchCreated} placeholder="Box ID"
-              value={batch.boxId}
-              onChange={e => setBatch({ ...batch, boxId: e.target.value })} />
-
-            <input disabled={batchCreated} type="number" placeholder="Batch Size"
-              value={batch.batchSize}
-              onChange={e => setBatch({ ...batch, batchSize: Number(e.target.value) })} />
-
-            <input disabled={batchCreated} placeholder="Start Product ID"
-              value={batch.startProductId}
-              onChange={e => setBatch({ ...batch, startProductId: e.target.value })} />
-          </div>
-
-          <h3>Product Template</h3>
-
-          <div className="form-row">
-            <input disabled={batchCreated} placeholder="Product Name"
-              value={batch.name}
-              onChange={e => setBatch({ ...batch, name: e.target.value })} />
-
-            <input disabled={batchCreated} placeholder="Category"
-              value={batch.category}
-              onChange={e => setBatch({ ...batch, category: e.target.value })} />
-
-            <input disabled={batchCreated} placeholder="Model Number"
-              value={batch.modelNumber}
-              onChange={e => setBatch({ ...batch, modelNumber: e.target.value })} />
-          </div>
-
-          <div className="form-row">
-            <input disabled={batchCreated} placeholder="Color"
-              value={batch.color}
-              onChange={e => setBatch({ ...batch, color: e.target.value })} />
-
-            <input disabled={batchCreated} placeholder="Warranty"
-              value={batch.warrantyPeriod}
-              onChange={e => setBatch({ ...batch, warrantyPeriod: e.target.value })} />
-
-            <input disabled={batchCreated} type="number" placeholder="Price"
-              value={batch.price}
-              onChange={e => setBatch({ ...batch, price: Number(e.target.value) })} />
-          </div>
+        <div className="topbar">
+          <h1>MANUFACTURER DASHBOARD</h1>
 
           <button
-            className="btn-primary"
-            disabled={batchCreated}
-            onClick={handleCreateBatch}
+            className={account ? "wallet connected" : "wallet"}
+            onClick={connectWallet}
           >
-            Create & Register Batch
+            {account
+              ? `${account.slice(0, 6)}...${account.slice(-4)}`
+              : "CONNECT METAMASK"}
           </button>
-
-          {status && <div className="login-error">{status}</div>}
         </div>
-      )}
 
-      {/* ================= SHIP BOX ================= */}
-
-      {activeAction === "ship" && (
-        <div className="product-form">
-          <input placeholder="Enter Box ID"
-            value={boxId}
-            onChange={e => setBoxId(e.target.value)} />
-
-          <button className="btn-outline" onClick={handleFetchBox}>
-            Fetch Box
-          </button>
-
-          {boxProducts.length > 0 && (
-            <button className="btn-primary" onClick={handleShipBox}>
-              Ship All ({boxProducts.length})
-            </button>
-          )}
-
-          {status && <div className="login-error">{status}</div>}
+        {/* STATS */}
+        <div className="stats">
+          <StatCard icon="📦" title="TOTAL BATCHES" value={stats.totalBatches} />
+          <StatCard icon="🛍️" title="TOTAL PRODUCTS" value={stats.totalProducts} />
+          <StatCard icon="🚚" title="SHIPPED" value={stats.totalShipped} />
+          <StatCard icon="⛓️" title="TRANSACTIONS" value={stats.totalTransactions} />
         </div>
-      )}
 
-      {/* ================= FETCH PRODUCT ================= */}
+        {/* REGISTER TAB */}
+        {activeTab === "register" && (
+          <div className="register-layout">
 
-      {activeAction === "fetch" && (
-        <div className="product-form">
-          <input placeholder="Enter Product ID"
-            value={searchProductId}
-            onChange={e => setSearchProductId(e.target.value)} />
+            <div className="card form-card">
+              <h2>REGISTER NEW BATCH</h2>
 
-          <button className="btn-outline" onClick={handleFetchProduct}>
-            Fetch
-          </button>
+              <div className="form-grid">
 
-          {fetchedProduct && (
-            <div className="fetched-product-card">
-              <h4>{fetchedProduct.name}</h4>
-              <p>Product ID: {fetchedProduct.productId}</p>
-              <p>Box ID: {fetchedProduct.boxId}</p>
-              <p>Shipped: {fetchedProduct.shipped ? "Yes" : "No"}</p>
+                <div>
+                  <FormInput label="BATCH ID" name="batchId" value={formData.batchId} onChange={handleChange}/>
+                  <FormInput label="BOX ID" name="boxId" value={formData.boxId} onChange={handleChange}/>
+                  <FormInput label="BATCH SIZE" type="number" name="batchSize" value={formData.batchSize} onChange={handleChange}/>
+                  <FormInput label="START PRODUCT ID" name="startProductId" value={formData.startProductId} onChange={handleChange}/>
+                  <FormInput label="PRODUCT NAME" name="name" value={formData.name} onChange={handleChange}/>
+                  <FormInput label="CATEGORY" name="category" value={formData.category} onChange={handleChange}/>
+                </div>
+
+                <div>
+                  <FormInput label="MANUFACTURER" name="manufacturer" value={formData.manufacturer} onChange={handleChange}/>
+                  <FormInput label="MANUFACTURER DATE" type="date" name="manufacturerDate" value={formData.manufacturerDate} onChange={handleChange}/>
+                  <FormInput label="MANUFACTURE PLACE" name="manufacturePlace" value={formData.manufacturePlace} onChange={handleChange}/>
+                  <FormInput label="MODEL NUMBER" name="modelNumber" value={formData.modelNumber} onChange={handleChange}/>
+                  <FormInput label="WARRANTY PERIOD" name="warrantyPeriod" value={formData.warrantyPeriod} onChange={handleChange}/>
+                  <FormInput label="COLOR" name="color" value={formData.color} onChange={handleChange}/>
+                  <FormInput label="PRICE" type="number" name="price" value={formData.price} onChange={handleChange}/>
+                </div>
+
+              </div>
+
+              <button className="primary-btn" onClick={handleRegister}>
+                REGISTER ON BLOCKCHAIN
+              </button>
             </div>
-          )}
 
-          {status && <div className="login-error">{status}</div>}
-        </div>
-      )}
+            {/* ACTIVITY */}
+            <div className="card activity-card">
+              <h2>RECENT ACTIVITY</h2>
+
+              {activity.map((item, i) => (
+                <div key={i} className="activity">
+                  <p>{item.message}</p>
+                  <small>{new Date(item.createdAt).toLocaleString()}</small>
+                </div>
+              ))}
+            </div>
+
+          </div>
+        )}
+
+        {/* FETCH */}
+        {activeTab === "fetch" && (
+          <div className="card">
+            <h2>FETCH BATCHES</h2>
+
+            <input
+              className="search-bar"
+              placeholder="SEARCH BY BATCH ID..."
+              value={search}
+              onChange={(e)=>setSearch(e.target.value)}
+            />
+
+            {filteredBatches.map((batch)=>(
+              <div key={batch.batchId} className="batch-row">
+                <strong>{batch.batchId}</strong>
+                <span className={batch.shipped?"badge shipped":"badge pending"}>
+                  {batch.shipped?"SHIPPED":"PENDING"}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* SHIP */}
+        {activeTab === "ship" && (
+          <div className="card">
+            <h2>SHIP PRODUCTS</h2>
+
+            <input
+              className="search-bar"
+              placeholder="SEARCH BY BATCH ID..."
+              value={search}
+              onChange={(e)=>setSearch(e.target.value)}
+            />
+
+            {filteredBatches
+              .filter(b=>!b.shipped)
+              .map(batch=>(
+                <div key={batch.batchId} className="batch-row">
+                  <strong>{batch.batchId}</strong>
+                  <button className="ship-btn" onClick={()=>handleShip(batch.batchId)}>
+                    SHIP NOW
+                  </button>
+                </div>
+            ))}
+          </div>
+        )}
+
+      </div>
     </div>
   );
-};
+}
 
-export default ManufacturerDashboard;
+/* ================= REUSABLE COMPONENTS ================= */
+
+function FormInput({ label, ...props }) {
+  return (
+    <div className="form-group">
+      <label>{label}</label>
+      <input {...props} />
+    </div>
+  );
+}
+
+function StatCard({ icon, title, value }) {
+  return (
+    <div className="stat-card">
+      <div className="stat-header">
+        <span className="stat-icon">{icon}</span>
+        <span>{title}</span>
+      </div>
+      <p className="stat-value">{value || 0}</p>
+    </div>
+  );
+}

@@ -203,57 +203,53 @@ const Home = () => {
         </div>
       </section>
 
-      {/* ================= CONTACT ================= */}
-      <section id="contact" className="contact-section">
-        <div className="contact-box">
+          {/* ================= CONTACT ================= */}
+        <section id="contact" className="contact-section">
+          <div className="contact-wrapper">
 
-          <h2 className="contact-title">GET IN TOUCH</h2>
-          <p className="contact-subtitle">
-            Have questions about TrustChain or want to integrate blockchain
-            authentication into your product line? We’re here to help.
-          </p>
+            <div className="contact-left">
+              <h2>GET IN TOUCH</h2>
+              <p className="contact-desc">
+                Have questions about TrustChain or want to integrate blockchain
+                authentication into your product line? We’re here to help.
+              </p>
 
-          <div className="contact-grid">
+              <div className="contact-info">
+                <div className="info-card">
+                  <h4>Email</h4>
+                  <p>support@trustchain.com</p>
+                </div>
 
-            {/* LEFT INFO */}
-            <div className="contact-info">
+                <div className="info-card">
+                  <h4>Phone</h4>
+                  <p>+91 9876543210</p>
+                </div>
 
-              <div className="info-item">
-                <span className="info-label">Email</span>
-                <p>support@trustchain.com</p>
+                <div className="info-card">
+                  <h4>Office</h4>
+                  <p>123 Blockchain Street<br />Tech City, India</p>
+                </div>
               </div>
 
-              <div className="info-item">
-                <span className="info-label">Phone</span>
-                <p>+91 9876543210</p>
+              <div className="contact-socials">
+                <img src="/instagram.png" alt="Instagram" />
+                <img src="/linkedin.png" alt="LinkedIn" />
+                <img src="/social.png" alt="Social" />
               </div>
+            </div>
 
-              <div className="info-item">
-                <span className="info-label">Office</span>
-                <p>123 Blockchain Street<br />Tech City, India</p>
-              </div>
-
+            {/* RIGHT FORM */}
+            <div className="contact-right">
+              <form className="contact-form">
+                <input type="text" placeholder="Your Name" required />
+                <input type="email" placeholder="Your Email" required />
+                <textarea placeholder="Your Message" rows="5" required />
+                <button type="submit">Send Message</button>
+              </form>
             </div>
 
           </div>
-
-          {/* SOCIAL ICONS */}
-          <div className="contact-socials">
-            <a href="#" className="social-link">
-              <img src="/instagram.png" alt="Instagram" />
-            </a>
-
-            <a href="#" className="social-link">
-              <img src="/linkedin.png" alt="LinkedIn" />
-            </a>
-
-            <a href="#" className="social-link">
-              <img src="/social.png" alt="Social" />
-            </a>
-          </div>
-
-        </div>
-      </section>
+        </section>
 
 
 

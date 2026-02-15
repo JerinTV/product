@@ -8,34 +8,53 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import { signChallenge } from "./nfc_emulator/chip.js";
-
 import { prisma } from "./prismaClient.js";
-import { authenticate } from "./middleware/auth.middleware.js";
 import authRoutes from "./routes/auth.routes.js";
-
-
 
 dotenv.config();
 
-/* ================= PATH UTILS ================= */
+/* ================= PATH ================= */
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /* ================= LOAD ABI ================= */
 
-const abiPath = path.join(__dirname, "abi.json");
-const abi = JSON.parse(fs.readFileSync(abiPath, "utf-8"));
+const abi = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "abi.json"), "utf-8")
+);
 
-/* ================= APP SETUP ================= */
+/* ================= EXPRESS ================= */
 
 const app = express();
-app.use(cors({ origin: "http://localhost:5173" }));
+app.use(cors());
 app.use(express.json());
-
-
 app.use("/api/auth", authRoutes);
-/* ================= BLOCKCHAIN SETUP ================= */
+
+/* ================= BIGINT FIX ================= */
+
+app.use((req, res, next) => {
+  const oldJson = res.json;
+  res.json = function (data) {
+    return oldJson.call(
+      this,
+      JSON.parse(
+        JSON.stringify(data, (_, v) =>
+          typeof v === "bigint" ? v.toString() : v
+        )
+      )
+    );
+  };
+  next();
+});
+
+/* ================= TEST ================= */
+
+app.get("/", (req, res) => {
+  res.send("SERVER WORKING");
+});
+
+/* ================= BLOCKCHAIN ================= */
 
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
 const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
@@ -49,203 +68,169 @@ const contract = new ethers.Contract(
 
 const activeChallenges = new Map();
 
-/* ================= UTILS ================= */
-
 function generateChallenge() {
   return crypto.randomBytes(8).toString("hex");
 }
 
 /* =====================================================
-   0️⃣ STORE NFC SECRET (manufacturing time)
-   ===================================================== */
+   MANUFACTURER ROUTES
+===================================================== */
 
+/* ---------- STATS ---------- */
+app.get("/api/manufacturer/stats", async (req, res) => {
+  try {
+    const totalBatches = await prisma.batch.count();
+    const totalProducts = await prisma.product.count();
+    const totalShipped = await prisma.product.count({
+      where: { shipped: true }
+    });
 
+    res.json({
+      totalBatches,
+      totalProducts,
+      totalShipped,
+      totalTransactions: totalShipped
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/* ---------- ACTIVITY ---------- */
+app.get("/api/manufacturer/activity", async (req, res) => {
+  try {
+    const batches = await prisma.batch.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 5
+    });
+
+    const activity = batches.map((b) => ({
+      message: `Batch ${b.batchId} registered`,
+      createdAt: b.createdAt
+    }));
+
+    res.json(activity);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/* ---------- BATCHES ---------- */
+app.get("/api/manufacturer/batches", async (req, res) => {
+  try {
+    const batches = await prisma.batch.findMany({
+      orderBy: { createdAt: "desc" }
+    });
+    res.json(batches);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
 
 /* =====================================================
-   1️⃣ CHALLENGE ENDPOINT
-   ===================================================== */
+   PREPARE BATCH  ✅ FIXED
+===================================================== */
 
-app.post("/challenge", async (req, res) => {
-  try {
-    const { productId } = req.body;
-
-    console.log("🔍 /challenge request:", productId);
-
-    if (!productId) {
-      return res.status(400).json({ error: "productId required" });
-    }
-
-    let product;
-    try {
-      product = await contract.getProduct(productId);
-    } catch (bcErr) {
-      console.error("❌ Blockchain error:", bcErr);
-      return res.status(500).json({ error: "Blockchain read failed" });
-    }
-
-    // 🔐 SAFETY CHECK
-    if (!product || !product.productId || product.productId.length === 0) {
-      return res.json({ status: "FAKE", reason: "Not registered" });
-    }
-
-    if (!product.shipped || !product.verifiedByRetailer) {
-      return res.json({ status: "NOT_READY" });
-    }
-
-    const challenge = generateChallenge();
-    activeChallenges.set(productId, challenge);
-
-    console.log("✅ Challenge issued:", challenge);
-    res.json({ challenge });
-
-  } catch (err) {
-    console.error("🔥 Challenge error:", err);
-    res.status(500).json({ error: "Challenge generation failed" });
-  }
-});
-
-app.post("/nfc/sign", async (req, res) => {
-  try {
-    const { productId, challenge } = req.body;
-
-    console.log("📡 /nfc/sign called");
-    console.log("Body:", req.body);
-
-    if (!productId || !challenge) {
-      return res.status(400).json({
-        error: "productId & challenge required"
-      });
-    }
-
-    const response = await signChallenge(productId, challenge);
-
-    res.json({ response });
-
-  } catch (err) {
-    console.error("❌ NFC SIGN ERROR:", err.message);
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post("/prepare-batch", authenticate, async (req, res) => {
+app.post("/api/manufacturer/prepare-batch", async (req, res) => {
   try {
     const batch = req.body;
 
-    const startNum = parseInt(
-      batch.startProductId.replace(/\D/g, ""),
-      10
-    );
-
-    const batchSecret = crypto.randomBytes(32).toString("hex");
+    if (!batch?.batchId || !batch?.boxId || !batch?.batchSize) {
+      return res.status(400).json({ message: "Invalid batch data" });
+    }
 
     const items = [];
 
-    for (let i = 0; i < batch.batchSize; i++) {
-      const productId = `P${startNum + i}`;
-      const serialNumber = `${batch.batchId}-SN-${i + 1}`;
-
-      const productSecret = crypto
-        .createHash("sha256")
-        .update(batchSecret + productId)
-        .digest("hex");
-
-      // ✅ Store in DB
-      await prisma.productSecret.upsert({
-        where: { productId },
-        update: { secret: productSecret },
-        create: { productId, secret: productSecret }
-      });
-
+     for (let i = 0; i < batch.batchSize; i++) {
       items.push({
-        productId,
-        boxId: batch.boxId,
-        name: batch.name,
-        category: batch.category,
-        manufacturer: batch.manufacturer,
-        manufacturerDate: batch.manufacturerDate,
-        manufacturePlace: batch.manufacturePlace,
-        modelNumber: batch.modelNumber,
-        serialNumber,
-        warrantyPeriod: batch.warrantyPeriod,
+        productId: `${batch.batchId}-${i + 1}`,
+        boxId: batch.boxId,                     // ✅ REQUIRED
+        name: batch.name || "",
+        category: batch.category || "",
+        manufacturer: batch.manufacturer || "",
+        manufacturerDate: batch.manufacturerDate || "",
+        manufacturePlace: batch.manufacturePlace || "",
+        modelNumber: batch.modelNumber || "",
+        serialNumber: `${batch.batchId}-${i + 1}`,
+        warrantyPeriod: batch.warrantyPeriod || "",
         batchNumber: batch.batchId,
-        color: batch.color,
-        specs: JSON.stringify({ batch: batch.batchId }),
-        price: batch.price,
-        image: batch.image
+        color: batch.color || "",
+        specs: JSON.stringify({}),
+        price: BigInt(batch.price || 0),
+        image: batch.image || ""
       });
     }
-
-    console.log("✅ Batch prepared with secrets stored in DB");
 
     res.json({ items });
 
   } catch (err) {
-    console.error("❌ Batch preparation failed:", err);
-    res.status(500).json({ error: "Batch preparation failed" });
+    console.error("Prepare batch error:", err);
+    res.status(500).json({ message: err.message });
   }
 });
 
-
-
-
-
 /* =====================================================
-   2️⃣ VERIFY ENDPOINT
-   ===================================================== */
+   REGISTER BATCH
+===================================================== */
 
-app.post("/verify", async (req, res) => {
+app.post("/api/manufacturer/register", async (req, res) => {
   try {
-    const { productId, response } = req.body;
+    const {
+      batchId,
+      boxId,
+      batchSize,
+      manufacturer,
+      manufacturerDate,
+      manufacturePlace,
+      modelNumber,
+      color,
+      price
+    } = req.body;
 
-    console.log("🔐 /verify request:", productId);
-
-    if (!productId || !response) {
-      return res.status(400).json({ error: "Invalid request" });
-    }
-
-    const challenge = activeChallenges.get(productId);
-
-    if (!challenge) {
-      return res.json({ status: "FAILED", reason: "No active challenge" });
-    }
-
-    let expected;
-    try {
-      expected = await signChallenge(productId, challenge);
-    } catch (nfcErr) {
-      console.error("❌ NFC error:", nfcErr);
-      return res.json({ status: "FAKE" });
-    }
-
-    activeChallenges.delete(productId); // one-time use
-
-    if (expected !== response) {
-      return res.json({ status: "FAKE" });
-    }
-
-    const product = await contract.getProduct(productId);
-
-    res.json({
-      status: "GENUINE",
-      product: {
-        productId: product.productId,
-        name: product.name,
-        image: product.image,
-        manufacturer: product.manufacturer,
-        shipped: product.shipped,
-        verifiedByRetailer: product.verifiedByRetailer,
-        sold: product.sold
+    await prisma.batch.create({
+      data: {
+        batchId,
+        boxId,
+        batchSize: parseInt(batchSize),
+        manufacturer,
+        manufacturerDate,
+        manufacturePlace,
+        modelNumber,
+        color,
+        price: BigInt(price),
+        shipped: false
       }
     });
 
+    res.json({ message: "Batch registered successfully" });
+
   } catch (err) {
-    console.error("🔥 Verify error:", err);
-    res.status(500).json({ error: "Verification failed" });
+    res.status(500).json({ message: err.message });
   }
 });
 
-/* ================= START SERVER ================= */
+/* ---------- SHIP ---------- */
+app.post("/api/manufacturer/ship", async (req, res) => {
+  try {
+    const { batchId } = req.body;
 
-app.listen(5000, () => {
-  console.log("✅ Backend running on http://localhost:5000");
+    await prisma.batch.update({
+      where: { batchId },
+      data: { shipped: true }
+    });
+
+    res.json({ message: "Batch shipped" });
+
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/* =====================================================
+   START
+===================================================== */
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`🚀 Backend running on http://localhost:${PORT}`);
 });

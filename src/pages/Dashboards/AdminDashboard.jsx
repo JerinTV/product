@@ -1,97 +1,185 @@
 // src/components/AdminDashboard.js
-import React, { useState,useEffect } from "react";
-import { getProduct, getProductIdsByBox, shipBox, verifyRetailer, saleComplete, } from "../../trustChain";
+
+import React, { useState } from "react";
+import {
+  connectBlockchain,
+  getProduct,
+  getProductIdsByBox,
+  shipBox,
+  verifyRetailer,
+  saleComplete
+} from "../../trustChain";
+
 import "../../index2.css";
 
 const AdminDashboard = () => {
   const [boxId, setBoxId] = useState("");
   const [products, setProducts] = useState([]);
   const [status, setStatus] = useState("");
-
   const [walletConnected, setWalletConnected] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  /* ================= CONNECT WALLET ================= */
 
   const handleConnect = async () => {
     try {
-      await window.ethereum.request({ method: "eth_requestAccounts" });
+      await connectBlockchain();
       setWalletConnected(true);
-      setStatus("");
+      setStatus("✅ Wallet Connected");
     } catch (e) {
       setWalletConnected(false);
-      setStatus("Wallet connect failed: " + e.message);
+      setStatus("❌ Wallet connection failed: " + e.message);
     }
   };
 
+  /* ================= FETCH BOX PRODUCTS ================= */
+
   const fetchBoxProducts = async () => {
     try {
-      setStatus("");
+      if (!boxId) {
+        setStatus("⚠️ Please enter a Box ID");
+        return;
+      }
+
+      setLoading(true);
+      setStatus("⏳ Fetching products...");
       setProducts([]);
-      if (!boxId) return;
+
       const ids = await getProductIdsByBox(boxId);
+
       const fetched = [];
+
       for (const id of ids) {
         const p = await getProduct(id);
         fetched.push(p);
       }
+
       setProducts(fetched);
-      setStatus(`Box ${boxId} has ${fetched.length} products.`);
+      setStatus(`✅ Box ${boxId} contains ${fetched.length} products`);
     } catch (e) {
-      setStatus("Fetch failed: " + e.message);
+      setStatus("❌ Fetch failed: " + (e.reason || e.message));
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleShip = async (productId) => {
+  /* ================= SHIP BOX ================= */
+
+  const handleShipBox = async () => {
     try {
-      await shipBox(productId);
-      setStatus(`Product ${productId} marked as shipped.`);
-      fetchBoxProducts();
+      if (!boxId) {
+        setStatus("⚠️ Enter Box ID first");
+        return;
+      }
+
+      setLoading(true);
+      setStatus("⏳ Shipping box...");
+
+      await shipBox(boxId);
+
+      setStatus(`✅ Box ${boxId} marked as shipped`);
+      await fetchBoxProducts();
     } catch (e) {
-      setStatus("Ship failed: " + e.message);
+      if (e.code === 4001) {
+        setStatus("⚠️ Transaction cancelled by user");
+      } else {
+        setStatus("❌ Ship failed: " + (e.reason || e.message));
+      }
+    } finally {
+      setLoading(false);
     }
   };
+
+  /* ================= VERIFY PRODUCT ================= */
 
   const handleVerify = async (productId) => {
     try {
+      setLoading(true);
+      setStatus("⏳ Verifying product...");
+
       await verifyRetailer(productId);
-      setStatus(`Product ${productId} verified.`);
-      fetchBoxProducts();
+
+      setStatus(`✅ Product ${productId} verified`);
+      await fetchBoxProducts();
     } catch (e) {
-      setStatus("Verify failed: " + e.message);
+      if (e.code === 4001) {
+        setStatus("⚠️ Transaction cancelled by user");
+      } else {
+        setStatus("❌ Verify failed: " + (e.reason || e.message));
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
+  /* ================= MARK SOLD ================= */
+
   const handleMarkSold = async (productId) => {
     try {
+      setLoading(true);
+      setStatus("⏳ Marking product as sold...");
+
       await saleComplete(productId);
-      setStatus(`Product ${productId} marked as sold.`);
-      fetchBoxProducts();
+
+      setStatus(`✅ Product ${productId} marked as sold`);
+      await fetchBoxProducts();
     } catch (e) {
-      setStatus("Mark sold failed: " + e.message);
+      if (e.code === 4001) {
+        setStatus("⚠️ Transaction cancelled by user");
+      } else {
+        setStatus("❌ Mark sold failed: " + (e.reason || e.message));
+      }
+    } finally {
+      setLoading(false);
     }
   };
+
+  /* ================= UI ================= */
 
   return (
     <div className="premium-dashboard" style={{ width: "100vw", padding: 20 }}>
       <h2>Admin Dashboard</h2>
-      <div className="form-row center" style={{ marginBottom: 20 }}>
-        <button className={`btn-primary ${walletConnected ? "connected" : ""}`} onClick={handleConnect}>
+
+      {/* CONNECT WALLET */}
+      <div style={{ marginBottom: 20 }}>
+        <button
+          className="btn-primary"
+          onClick={handleConnect}
+          style={{
+            backgroundColor: walletConnected ? "#28a745" : "#007bff"
+          }}
+        >
           {walletConnected ? "Connected" : "Connect Wallet"}
         </button>
       </div>
 
-      <div className="form-row" style={{ marginBottom: 20 }}>
+      {/* BOX INPUT */}
+      <div style={{ marginBottom: 20 }}>
         <input
           type="text"
-          className="login-input"
           placeholder="Enter Box ID"
           value={boxId}
           onChange={(e) => setBoxId(e.target.value)}
+          className="login-input"
         />
-        <button className="btn-outline" onClick={fetchBoxProducts}>Fetch Products</button>
+        <button className="btn-outline" onClick={fetchBoxProducts}>
+          Fetch Products
+        </button>
+
+        <button
+          className="btn-primary"
+          style={{ marginLeft: 10 }}
+          onClick={handleShipBox}
+        >
+          Ship Box
+        </button>
       </div>
 
+      {/* PRODUCTS TABLE */}
       {products.length > 0 && (
-        <div className="fetched-product-card" style={{ marginTop: 20 }}>
+        <div className="fetched-product-card">
           <h4>Products in Box {boxId}</h4>
+
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
@@ -103,18 +191,39 @@ const AdminDashboard = () => {
                 <th>Actions</th>
               </tr>
             </thead>
+
             <tbody>
-              {products.map(p => (
+              {products.map((p) => (
                 <tr key={p.productId}>
                   <td>{p.productId}</td>
                   <td>{p.name}</td>
                   <td>{p.shipped ? "✔" : "❌"}</td>
                   <td>{p.verifiedByRetailer ? "✔" : "❌"}</td>
                   <td>{p.sold ? "✔" : "❌"}</td>
+
                   <td>
-                    <button onClick={() => handleShip(p.productId)}>Ship</button>
-                    <button onClick={() => handleVerify(p.productId)}>Verify</button>
-                    <button onClick={() => handleMarkSold(p.productId)}>Mark Sold</button>
+                    {/* VERIFY */}
+                    {p.shipped && !p.verifiedByRetailer && (
+                      <button
+                        disabled={loading}
+                        onClick={() => handleVerify(p.productId)}
+                      >
+                        Verify
+                      </button>
+                    )}
+
+                    {/* MARK SOLD */}
+                    {p.verifiedByRetailer && !p.sold && (
+                      <button
+                        disabled={loading}
+                        onClick={() => handleMarkSold(p.productId)}
+                      >
+                        Mark Sold
+                      </button>
+                    )}
+
+                    {/* COMPLETED */}
+                    {p.sold && <span style={{ color: "green" }}>Completed</span>}
                   </td>
                 </tr>
               ))}
@@ -123,7 +232,12 @@ const AdminDashboard = () => {
         </div>
       )}
 
-      {status && <div className="login-error" style={{ marginTop: 20 }}>{status}</div>}
+      {/* STATUS */}
+      {status && (
+        <div className="login-error" style={{ marginTop: 20 }}>
+          {status}
+        </div>
+      )}
     </div>
   );
 };
