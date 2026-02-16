@@ -1,102 +1,68 @@
 import cors from "cors";
 import express from "express";
-import crypto from "crypto";
-import { ethers } from "ethers";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-
-import { signChallenge } from "./nfc_emulator/chip.js";
+import { ethers } from "ethers";
 import { prisma } from "./prismaClient.js";
-import authRoutes from "./routes/auth.routes.js";
 
 dotenv.config();
-
-/* ================= PATH ================= */
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/* ================= LOAD ABI ================= */
-
+// Load ABI
 const abi = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "abi.json"), "utf-8")
+  fs.readFileSync(path.join(__dirname, "../src/TrustChainAbi.json"), "utf-8")
 );
-
-/* ================= EXPRESS ================= */
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use("/api/auth", authRoutes);
 
-/* ================= BIGINT FIX ================= */
-
+// 🔹 Fix BigInt serialization middleware
 app.use((req, res, next) => {
   const oldJson = res.json;
   res.json = function (data) {
     return oldJson.call(
       this,
       JSON.parse(
-        JSON.stringify(data, (_, v) =>
-          typeof v === "bigint" ? v.toString() : v
-        )
+        JSON.stringify(data, (_, v) => (typeof v === "bigint" ? v.toString() : v))
       )
     );
   };
   next();
 });
 
-/* ================= TEST ================= */
+// Simple health check
+app.get("/", (req, res) => res.send("SERVER WORKING"));
 
-app.get("/", (req, res) => {
-  res.send("SERVER WORKING");
-});
-
-/* ================= BLOCKCHAIN ================= */
-
+// ---------- BLOCKCHAIN SETUP ----------
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
 const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-const contract = new ethers.Contract(
-  process.env.CONTRACT_ADDRESS,
-  abi,
-  wallet
-);
+const contract = new ethers.Contract(process.env.CONTRACT_ADDRESS, abi, wallet);
 
-/* ================= CHALLENGE STORE ================= */
+// ---------- MANUFACTURER ROUTES ----------
 
-const activeChallenges = new Map();
-
-function generateChallenge() {
-  return crypto.randomBytes(8).toString("hex");
-}
-
-/* =====================================================
-   MANUFACTURER ROUTES
-===================================================== */
-
-/* ---------- STATS ---------- */
+// Stats
 app.get("/api/manufacturer/stats", async (req, res) => {
   try {
     const totalBatches = await prisma.batch.count();
     const totalProducts = await prisma.product.count();
-    const totalShipped = await prisma.product.count({
-      where: { shipped: true }
-    });
+    const totalShipped = await prisma.product.count({ where: { shipped: true } });
 
-    res.json({
-      totalBatches,
-      totalProducts,
-      totalShipped,
-      totalTransactions: totalShipped
-    });
+    // Blockchain transactions = total batches registered + total batches shipped
+    const totalTransactions = totalBatches + totalShipped;
+
+    res.json({ totalBatches, totalProducts, totalShipped, totalTransactions });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: err.message });
   }
 });
 
-/* ---------- ACTIVITY ---------- */
+// Recent activity
 app.get("/api/manufacturer/activity", async (req, res) => {
   try {
     const batches = await prisma.batch.findMany({
@@ -105,46 +71,40 @@ app.get("/api/manufacturer/activity", async (req, res) => {
     });
 
     const activity = batches.map((b) => ({
-      message: `Batch ${b.batchId} registered`,
+      message: `${b.batchId} (${b.batchSize} products) ${b.shipped ? "shipped" : "registered"}`,
       createdAt: b.createdAt
     }));
 
     res.json(activity);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: err.message });
   }
 });
 
-/* ---------- BATCHES ---------- */
+// Get all batches
 app.get("/api/manufacturer/batches", async (req, res) => {
   try {
-    const batches = await prisma.batch.findMany({
-      orderBy: { createdAt: "desc" }
-    });
+    const batches = await prisma.batch.findMany({ orderBy: { createdAt: "desc" } });
     res.json(batches);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: err.message });
   }
 });
 
-/* =====================================================
-   PREPARE BATCH  ✅ FIXED
-===================================================== */
-
+// Prepare batch (returns array of products for blockchain)
 app.post("/api/manufacturer/prepare-batch", async (req, res) => {
   try {
     const batch = req.body;
-
-    if (!batch?.batchId || !batch?.boxId || !batch?.batchSize) {
+    if (!batch.batchId || !batch.boxId || !batch.batchSize)
       return res.status(400).json({ message: "Invalid batch data" });
-    }
 
     const items = [];
-
-     for (let i = 0; i < batch.batchSize; i++) {
+    for (let i = 0; i < batch.batchSize; i++) {
       items.push({
         productId: `${batch.batchId}-${i + 1}`,
-        boxId: batch.boxId,                     // ✅ REQUIRED
+        boxId: batch.boxId,
         name: batch.name || "",
         category: batch.category || "",
         manufacturer: batch.manufacturer || "",
@@ -162,75 +122,116 @@ app.post("/api/manufacturer/prepare-batch", async (req, res) => {
     }
 
     res.json({ items });
-
   } catch (err) {
-    console.error("Prepare batch error:", err);
+    console.error(err);
     res.status(500).json({ message: err.message });
   }
 });
 
-/* =====================================================
-   REGISTER BATCH
-===================================================== */
-
+// Register batch in DB + Blockchain
 app.post("/api/manufacturer/register", async (req, res) => {
   try {
-    const {
-      batchId,
-      boxId,
-      batchSize,
-      manufacturer,
-      manufacturerDate,
-      manufacturePlace,
-      modelNumber,
-      color,
-      price
-    } = req.body;
+    const batch = req.body;
 
+    // Save in database
     await prisma.batch.create({
       data: {
-        batchId,
-        boxId,
-        batchSize: parseInt(batchSize),
-        manufacturer,
-        manufacturerDate,
-        manufacturePlace,
-        modelNumber,
-        color,
-        price: BigInt(price),
+        batchId: batch.batchId,
+        boxId: batch.boxId,
+        batchSize: parseInt(batch.batchSize),
+        manufacturer: batch.manufacturer,
+        manufacturerDate: batch.manufacturerDate,
+        manufacturePlace: batch.manufacturePlace,
+        modelNumber: batch.modelNumber,
+        color: batch.color,
+        price: BigInt(batch.price),
         shipped: false
       }
     });
 
-    res.json({ message: "Batch registered successfully" });
+    // Save products individually
+    for (let i = 0; i < batch.batchSize; i++) {
+      await prisma.product.create({
+        data: {
+          productId: `${batch.batchId}-${i + 1}`,
+          boxId: batch.boxId,
+          name: batch.name,
+          category: batch.category,
+          manufacturer: batch.manufacturer,
+          manufacturerDate: batch.manufacturerDate,
+          manufacturePlace: batch.manufacturePlace,
+          modelNumber: batch.modelNumber,
+          serialNumber: `${batch.batchId}-${i + 1}`,
+          warrantyPeriod: batch.warrantyPeriod,
+          batchNumber: batch.batchId,
+          color: batch.color,
+          specs: JSON.stringify({}),
+          price: BigInt(batch.price),
+          image: batch.image,
+          shipped: false
+        }
+      });
+    }
 
+    // Blockchain transaction
+    const items = [];
+    for (let i = 0; i < batch.batchSize; i++) {
+      items.push({
+        productId: `${batch.batchId}-${i + 1}`,
+        boxId: batch.boxId,
+        name: batch.name,
+        category: batch.category,
+        manufacturer: batch.manufacturer,
+        manufacturerDate: batch.manufacturerDate,
+        manufacturePlace: batch.manufacturePlace,
+        modelNumber: batch.modelNumber,
+        serialNumber: `${batch.batchId}-${i + 1}`,
+        warrantyPeriod: batch.warrantyPeriod,
+        batchNumber: batch.batchId,
+        color: batch.color,
+        specs: JSON.stringify({}),
+        price: BigInt(batch.price),
+        image: batch.image
+      });
+    }
+
+    const tx = await contract.registerBatchProducts(batch.batchId, batch.boxId, items);
+    await tx.wait();
+
+    res.json({ message: "Batch registered successfully" });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: err.message });
   }
 });
 
-/* ---------- SHIP ---------- */
+// Ship batch in DB + Blockchain
 app.post("/api/manufacturer/ship", async (req, res) => {
   try {
     const { batchId } = req.body;
 
+    // Update batch
     await prisma.batch.update({
       where: { batchId },
       data: { shipped: true }
     });
 
-    res.json({ message: "Batch shipped" });
+    // Update products
+    await prisma.product.updateMany({
+      where: { batchNumber: batchId },
+      data: { shipped: true }
+    });
 
+    // Blockchain transaction
+    const tx = await contract.shipBox(batchId);
+    await tx.wait();
+
+    res.json({ message: "Batch shipped successfully" });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: err.message });
   }
 });
 
-/* =====================================================
-   START
-===================================================== */
-
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Backend running on http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
